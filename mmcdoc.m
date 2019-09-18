@@ -109,7 +109,7 @@ main(!IO) :-
                 getopt_io.lookup_bool_option(Options, no_cache, NoCache),
                 (
                     NoCache = no,
-                    refresh_cache(Module, !IO),
+                    ensure_cache(Module, !IO),
                     cache_stdlib(Module, !IO)
                 ;
                     NoCache = yes,
@@ -153,17 +153,35 @@ det_htmldir(Dir, !IO) :-
         die(Error, !IO)
     ).
 
+:- pred ensure_cache(string::in, io::di, io::uo) is det.
+ensure_cache(Module, !IO) :-
+    config.cachefile(Module, Res, !IO),
+    (
+        Res = yes(Path),
+        io.check_file_accessibility(Path, [read], Res2, !IO),
+        (
+            Res2 = ok
+        ;
+            Res2 = error(_),
+            refresh_cache(Module, !IO)
+        )
+    ;
+        Res = no,
+        die("Unable to determine local cachefile. Try --local\n", !IO)
+    ).
+
 :- pred refresh_cache(string::in, io::di, io::uo) is det.
 refresh_cache(Module, !IO) :-
     config.cachefile(Module, Res, !IO),
     (
         Res = yes(Path),
-        config.older(Path, 7, Old, !IO),
+        config.older(Path, 14, Old, !IO),
         (
             Old = yes,
             Cmd = string.format("wget -O '%s' '%s'",
                 [s(Path), s(config.url(Module))]),
-            call_system(Cmd, !IO)
+            call_system(Cmd, !IO),
+            call_system("touch " ++ Path, !IO)
         ;
             Old = no
         )
