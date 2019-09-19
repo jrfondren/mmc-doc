@@ -8,7 +8,7 @@
 :- use_module libinfo, config, dir.
 
 :- func version = string.
-version = "v0.1.0".
+version = "v0.1.2".
 
 :- type option
     --->    help
@@ -53,6 +53,8 @@ usage(!IO) :-
         "  -v, --version      show version\n" ++
         "  -l, --local        use local documentation (implied by -i)\n" ++
         "  -n, --no-cache     loading remote docs without caching\n\n" ++
+        "  <module> <name>\n" ++
+        "                     look at matching predicate documentation\n\n" ++
         "  -i [lib|ref|user|prolog|faq]\n" ++
         "                     load doc index, stdlib index, etc.\n\n" ++
         "  --list-modules     list standard library modules\n" ++
@@ -72,9 +74,9 @@ index("faq", "faq").
 main(!IO) :-
     io.command_line_arguments(RawArgs, !IO),
     Config = option_ops_multi(short_option, long_option, option_defaults),
-    getopt_io.process_options(Config, RawArgs, Args, Res, !IO),
+    getopt_io.process_options(Config, RawArgs, Args, ResOpts, !IO),
     (
-        Res = ok(Options),
+        ResOpts = ok(Options),
         ( if getopt_io.lookup_bool_option(Options, help, yes) then
             usage(!IO)
         else if getopt_io.lookup_bool_option(Options, version, yes) then
@@ -116,11 +118,31 @@ main(!IO) :-
                     remote_stdlib(Module, !IO)
                 )
             )
+        else if
+            Args = [Module, Atom],
+            libinfo.stdlib(Module)
+        then
+            getopt_io.lookup_bool_option(Options, local_docs, LocalDocs),
+            (
+                LocalDocs = yes,
+                open_local_stdlib(Module, Res, !IO)
+            ;
+                LocalDocs = no,
+                ensure_cache(Module, !IO),
+                open_cache_stdlib(Module, Res, !IO)
+            ),
+            (
+                Res = ok(File),
+                grep_atom(Module, Atom, File, !IO)
+            ;
+                Res = error(Reason),
+                die(string(Reason), !IO)
+            )
         else
             usage(!IO)
         )
     ;
-        Res = error(Reason),
+        ResOpts = error(Reason),
         io.progname_base("mmc-doc", Program, !IO),
         io.format(io.stderr_stream, "%s: %s\n", [s(Program), s(Reason)], !IO),
         usage(!IO)
@@ -206,6 +228,96 @@ cache_stdlib(Module, !IO) :-
 remote_stdlib(Module, !IO) :-
     Cmd = string.format("w3m '%s'", [s(config.url(Module))]),
     call_system(Cmd, !IO).
+
+:- type grep_state
+    --->    other_module
+    ;       in_module(list(string))
+    ;       ending_term.
+
+:- pred grep_atom(string, string, io.input_stream, io, io).
+:- mode grep_atom(in, in, in, di, uo) is det.
+grep_atom(Module, Atom, File, !IO) :-
+    grep_atom(other_module, Module, Atom, File, !IO).
+
+:- pred grep_atom(grep_state, string, string, io.input_stream, io, io).
+:- mode grep_atom(in, in, in, in, di, uo) is det.
+grep_atom(other_module, Module, Atom, File, !IO) :-
+    io.read_line_as_string(File, Res, !IO),
+    (
+        Res = ok(Line),
+        ( if Line = ":- module " ++ Module ++ ".\n" then
+            S = in_module([])
+        else
+            S = other_module
+        ),
+        grep_atom(S, Module, Atom, File, !IO)
+    ;
+        Res = eof
+    ;
+        Res = error(E),
+        die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
+    ).
+
+grep_atom(in_module(L), Module, Atom, File, !IO) :-
+    io.read_line_as_string(File, Res, !IO),
+    (
+        Res = ok(Line),
+        ( if Line = ":- module " ++ Module ++ ".\n" then
+            S = in_module([])
+        else if prefix(Line, ":- module ") then
+            S = other_module
+        else if prefix(Line, ":-"), sub_string_search(Line, Atom, _) then
+            foldl(io.write_string, reverse(L), !IO),
+            io.write_string(Line, !IO),
+            S = ending_term
+        else if prefix(Line, "    %") then
+            S = in_module([Line | L])
+        else
+            S = in_module([])
+        ),
+        grep_atom(S, Module, Atom, File, !IO)
+    ;
+        Res = eof
+    ;
+        Res = error(E),
+        die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
+    ).
+
+grep_atom(ending_term, Module, Atom, File, !IO) :-
+    io.read_line_as_string(File, Res, !IO),
+    (
+        Res = ok(Line),
+        io.write_string(Line, !IO),
+        ( if all_match(is_whitespace, Line) then
+            S = in_module([])
+        else
+            S = ending_term
+        ),
+        grep_atom(S, Module, Atom, File, !IO)
+    ;
+        Res = eof
+    ;
+        Res = error(E),
+        die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
+    ).
+
+:- pred open_local_stdlib(string, io.res(io.input_stream), io, io).
+:- mode open_local_stdlib(in, out, di, uo) is det.
+open_local_stdlib(_, Res, !IO) :-
+    det_htmldir(Dir, !IO),
+    io.open_input(Dir ++ "/mercury_library.html", Res, !IO).
+
+:- pred open_cache_stdlib(string, io.res(io.input_stream), io, io).
+:- mode open_cache_stdlib(in, out, di, uo) is det.
+open_cache_stdlib(Module, Res, !IO) :-
+    config.cachefile(Module, CacheRes, !IO),
+    (
+        CacheRes = yes(Path),
+        io.open_input(Path, Res, !IO)
+    ;
+        CacheRes = no,
+        die("Unable to determine local cachefile. Try --local\n", !IO)
+    ).
 
 :- pred call_system(string::in, io::di, io::uo) is det.
 call_system(Cmd, !IO) :-
