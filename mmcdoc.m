@@ -17,7 +17,8 @@ version = "v0.1.2".
     ;       no_cache
     ;       list_modules
     ;       refresh_cache
-    ;       index.
+    ;       index
+    ;       backup.
 
 :- pred short_option(char::in, option::out) is semidet.
 short_option('h', help).
@@ -25,6 +26,7 @@ short_option('v', version).
 short_option('l', local_docs).
 short_option('n', no_cache).
 short_option('i', index).
+short_option('b', backup).
 
 :- pred long_option(string::in, option::out) is semidet.
 long_option("help", help).
@@ -33,6 +35,7 @@ long_option("local", local_docs).
 long_option("no-cache", no_cache).
 long_option("list-modules", list_modules).
 long_option("refresh-cache", refresh_cache).
+long_option("backup", backup).
 
 :- pred option_defaults(option, option_data).
 :- mode option_defaults(out, out) is multi.
@@ -43,6 +46,7 @@ option_defaults(no_cache, bool(no)).
 option_defaults(list_modules, bool(no)).
 option_defaults(refresh_cache, bool(no)).
 option_defaults(index, bool(no)).
+option_defaults(backup, bool(no)).
 
 :- pred usage(io::di, io::uo) is erroneous.
 usage(!IO) :-
@@ -52,7 +56,8 @@ usage(!IO) :-
         "  -h, --help         show this text\n" ++
         "  -v, --version      show version\n" ++
         "  -l, --local        use local documentation (implied by -i)\n" ++
-        "  -n, --no-cache     loading remote docs without caching\n\n" ++
+        "  -n, --no-cache     load remote docs without caching\n" ++
+        "  -b, --backup       use backup (mercury-in.space) URL for remote docs\n\n" ++
         "  <module> <name>\n" ++
         "                     look at matching predicate documentation\n\n" ++
         "  -i [lib|ref|user|prolog|faq]\n" ++
@@ -77,6 +82,7 @@ main(!IO) :-
     getopt_io.process_options(Config, RawArgs, Args, ResOpts, !IO),
     (
         ResOpts = ok(Options),
+        getopt_io.lookup_bool_option(Options, backup, Backup),
         ( if getopt_io.lookup_bool_option(Options, help, yes) then
             usage(!IO)
         else if getopt_io.lookup_bool_option(Options, version, yes) then
@@ -89,7 +95,7 @@ main(!IO) :-
         else if getopt_io.lookup_bool_option(Options, refresh_cache, yes) then
             P = (pred(M::out) is nondet :- libinfo.stdlib(M)),
             solutions(P, Modules),
-            foldl(refresh_cache, Modules, !IO)
+            foldl(refresh_cache(Backup), Modules, !IO)
         else if
             getopt_io.lookup_bool_option(Options, index, yes),
             Args = [Index],
@@ -111,11 +117,17 @@ main(!IO) :-
                 getopt_io.lookup_bool_option(Options, no_cache, NoCache),
                 (
                     NoCache = no,
-                    ensure_cache(Module, !IO),
+                    ensure_cache(Backup, Module, !IO),
                     cache_stdlib(Module, !IO)
                 ;
                     NoCache = yes,
-                    remote_stdlib(Module, !IO)
+                    (
+                        Backup = yes,
+                        backup_stdlib(Module, !IO)
+                    ;
+                        Backup = no,
+                        remote_stdlib(Module, !IO)
+                    )
                 )
             )
         else if
@@ -128,7 +140,7 @@ main(!IO) :-
                 open_local_stdlib(Module, Res, !IO)
             ;
                 LocalDocs = no,
-                ensure_cache(Module, !IO),
+                ensure_cache(Backup, Module, !IO),
                 open_cache_stdlib(Module, Res, !IO)
             ),
             (
@@ -151,15 +163,12 @@ main(!IO) :-
 :- pred local_index(string::in, io::di, io::uo) is det.
 local_index(Index, !IO) :-
     det_htmldir(Dir, !IO),
-    Cmd = string.format("w3m '%s/%s'", [s(Dir), s(Index)]),
-    call_system(Cmd, !IO).
+    browse_to(Dir ++ "/" ++ Index, !IO).
 
 :- pred local_stdlib(string::in, io::di, io::uo) is det.
 local_stdlib(Module, !IO) :-
     det_htmldir(Dir, !IO),
-    Cmd = string.format("w3m '%s/mercury_library.html#%s'",
-        [s(Dir), s(libinfo.anchor(Module))]),
-    call_system(Cmd, !IO).
+    browse_to(Dir ++ "/mercury_library.html#" ++ libinfo.anchor(Module), !IO).
 
 :- pred det_htmldir(string::out, io::di, io::uo) is det.
 det_htmldir(Dir, !IO) :-
@@ -175,8 +184,8 @@ det_htmldir(Dir, !IO) :-
         die(Error, !IO)
     ).
 
-:- pred ensure_cache(string::in, io::di, io::uo) is det.
-ensure_cache(Module, !IO) :-
+:- pred ensure_cache(bool::in, string::in, io::di, io::uo) is det.
+ensure_cache(Backup, Module, !IO) :-
     config.cachefile(Module, Res, !IO),
     (
         Res = yes(Path),
@@ -185,23 +194,29 @@ ensure_cache(Module, !IO) :-
             Res2 = ok
         ;
             Res2 = error(_),
-            refresh_cache(Module, !IO)
+            refresh_cache(Backup, Module, !IO)
         )
     ;
         Res = no,
         die("Unable to determine local cachefile. Try --local\n", !IO)
     ).
 
-:- pred refresh_cache(string::in, io::di, io::uo) is det.
-refresh_cache(Module, !IO) :-
+:- pred refresh_cache(bool::in, string::in, io::di, io::uo) is det.
+refresh_cache(Backup, Module, !IO) :-
     config.cachefile(Module, Res, !IO),
     (
         Res = yes(Path),
         config.older(Path, 14, Old, !IO),
         (
             Old = yes,
-            Cmd = string.format("wget -O '%s' '%s'",
-                [s(Path), s(config.url(Module))]),
+            (
+                Backup = yes,
+                Url = config.backup_url(Module)
+            ;
+                Backup = no,
+                Url = config.url(Module)
+            ),
+            Cmd = string.format("wget -O '%s' '%s'", [s(Path), s(Url)]),
             call_system(Cmd, !IO),
             call_system("touch " ++ Path, !IO)
         ;
@@ -217,8 +232,7 @@ cache_stdlib(Module, !IO) :-
     config.cachefile(Module, Res, !IO),
     (
         Res = yes(Path),
-        Cmd = string.format("w3m '%s'", [s(Path)]),
-        call_system(Cmd, !IO)
+        browse_to(Path, !IO)
     ;
         Res = no,
         die("Unable to determine local cachefile. Try --local\n", !IO)
@@ -226,8 +240,11 @@ cache_stdlib(Module, !IO) :-
 
 :- pred remote_stdlib(string::in, io::di, io::uo) is det.
 remote_stdlib(Module, !IO) :-
-    Cmd = string.format("w3m '%s'", [s(config.url(Module))]),
-    call_system(Cmd, !IO).
+    browse_to(config.url(Module), !IO).
+
+:- pred backup_stdlib(string::in, io::di, io::uo) is det.
+backup_stdlib(Module, !IO) :-
+    browse_to(config.backup_url(Module), !IO).
 
 :- type grep_state
     --->    other_module
@@ -317,6 +334,17 @@ open_cache_stdlib(Module, Res, !IO) :-
     ;
         CacheRes = no,
         die("Unable to determine local cachefile. Try --local\n", !IO)
+    ).
+
+:- pred browse_to(string::in, io::di, io::uo) is det.
+browse_to(URL, !IO) :-
+    config.browser(MaybeBrowser, !IO),
+    (
+        MaybeBrowser = yes(Browser),
+        call_system(string.format("%s '%s'", [s(Browser), s(URL)]), !IO)
+    ;
+        MaybeBrowser = no,
+        die("couldn't find a browser to use (set $WWWPAGER? get w3m? get xdg-open?)", !IO)
     ).
 
 :- pred call_system(string::in, io::di, io::uo) is det.

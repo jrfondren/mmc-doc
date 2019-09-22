@@ -2,21 +2,41 @@
 :- interface.
 :- import_module io, maybe, bool.
 
+    % configdir(MaybeDir, !IO)
+    % MaybeDir = yes(dir.(Config / "mmc-doc")) ; MaybeDir = no,
+    % where Config is one of $XDG_CONFIG_HOME, $APPDATA, $HOME/.config
+    % mmc-doc is created if it doesn't exist; the parent is not
+    %
 :- pred configdir(maybe(string)::out, io::di, io::uo) is det.
 
+    % htmldir(MaybeDir, !IO)
+    % MaybeDir = yes(HTML) ; MaybeDir = no,
+    % where HTML is one of:
+    %   $MMCDOC_HTMLDIR,
+    %   Config (if dir.(Config / "mercury_library.html") exists)
+    %   $(which mmc)/../../share/doc/Version/ (where Version is taken from $(which mmc))
+    %
 :- pred htmldir(maybe(string)::out, io::di, io::uo) is det.
 
 :- pred cachefile(string::in, maybe(string)::out, io::di, io::uo) is det.
 
 :- func url(string) = string.
 
+:- func backup_url(string) = string.
+
 :- pred exists(string::in, bool::out, io::di, io::uo) is det.
 
     % older(Path, Days, Bool, !IO)
     % Bool = no if Path exists and was modified within Days days
-    % Bool = yes otherwise (so if old or absent)
+    % Bool = yes if old or absent
     %
 :- pred older(string::in, int::in, bool::out, io::di, io::uo) is det.
+
+    % browser(MaybePath, !IO)
+    % MaybePath = yes(Path) ; MaybePath = no
+    % where Path is one of $WWWPAGER, $(which w3m), $(which xdg-open)
+    %
+:- pred browser(maybe(string)::out, io::di, io::uo) is det.
 
 :- implementation.
 :- import_module popen, string, list.
@@ -51,6 +71,9 @@ cachefile(Module, Path, !IO) :-
 
 url(Module) = Base ++ libinfo.anchor(Module) ++ ".html" :-
     Base = "https://mercurylang.org/information/doc-latest/mercury_library/".
+
+backup_url(Module) = Base ++ libinfo.anchor(Module) ++ ".html" :-
+    Base = "https://mercury-in.space/mercurylang.org/information/doc-latest/mercury_library/".
 
 configdir(Dir, !IO) :-
     get_configdir(Decided, !IO),
@@ -115,6 +138,22 @@ htmldir(Dir, !IO) :-
                     )),
         GetDir(Dir, !IO),
         set_htmldir(yes(Dir), !IO)
+    ).
+
+browser(Path, !IO) :-
+    GetBrowser = get_environment_var("WWWPAGER")
+        //  unwrap(popen("which w3m"))
+        //  unwrap(popen("which xdg-open")),
+    GetBrowser(Path, !IO).
+
+:- pred unwrap((pred(popen_result, io, io)), maybe(string), io, io).
+:- mode unwrap((pred(out, di, uo) is det), out, di, uo) is det.
+unwrap(Popen, Res, !IO) :-
+    Popen(Res1, !IO),
+    ( if Res1 = ok(S, 0) then
+        Res = yes(string.chomp(S))
+    else
+        Res = no
     ).
 
 :- pragma foreign_decl("C", "
