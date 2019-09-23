@@ -5,10 +5,10 @@
 :- implementation.
 :- import_module string, list, char, bool, maybe.
 :- import_module getopt_io, popen, solutions.
-:- use_module libinfo, config, dir.
+:- use_module libinfo, config, dir, html.
 
 :- func version = string.
-version = "v0.1.2".
+version = "v0.2.0".
 
 :- type option
     --->    help
@@ -18,7 +18,10 @@ version = "v0.1.2".
     ;       list_modules
     ;       refresh_cache
     ;       index
-    ;       backup.
+    ;       backup
+    ;       grep
+    ;       comment
+    ;       restrict.
 
 :- pred short_option(char::in, option::out) is semidet.
 short_option('h', help).
@@ -27,6 +30,9 @@ short_option('l', local_docs).
 short_option('n', no_cache).
 short_option('i', index).
 short_option('b', backup).
+short_option('g', grep).
+short_option('c', comment).
+short_option('t', restrict).
 
 :- pred long_option(string::in, option::out) is semidet.
 long_option("help", help).
@@ -36,6 +42,8 @@ long_option("no-cache", no_cache).
 long_option("list-modules", list_modules).
 long_option("refresh-cache", refresh_cache).
 long_option("backup", backup).
+long_option("grep", grep).
+long_option("comment", comment).
 
 :- pred option_defaults(option, option_data).
 :- mode option_defaults(out, out) is multi.
@@ -47,6 +55,9 @@ option_defaults(list_modules, bool(no)).
 option_defaults(refresh_cache, bool(no)).
 option_defaults(index, bool(no)).
 option_defaults(backup, bool(no)).
+option_defaults(grep, bool(no)).
+option_defaults(comment, bool(no)).
+option_defaults(restrict, maybe_string(no)).
 
 :- pred usage(io::di, io::uo) is erroneous.
 usage(!IO) :-
@@ -58,8 +69,10 @@ usage(!IO) :-
         "  -l, --local        use local documentation (implied by -i)\n" ++
         "  -n, --no-cache     load remote docs without caching\n" ++
         "  -b, --backup       use backup (mercury-in.space) URL for remote docs\n\n" ++
-        "  <module> <name>\n" ++
-        "                     look at matching predicate documentation\n\n" ++
+        "  <module> <token>   search module declarations for token\n" ++
+        "  -g, --grep         search for substrings instead of tokens\n" ++
+        "  -c, --comment      search for comment substrings\n" ++
+        "  -t <declaration>   restrict search to 'type', 'pred', etc.\n\n" ++
         "  -i [lib|ref|user|prolog|faq]\n" ++
         "                     load doc index, stdlib index, etc.\n\n" ++
         "  --list-modules     list standard library modules\n" ++
@@ -135,6 +148,7 @@ main(!IO) :-
             libinfo.stdlib(Module)
         then
             getopt_io.lookup_bool_option(Options, local_docs, LocalDocs),
+            getopt_io.lookup_maybe_string_option(Options, restrict, Restrict),
             (
                 LocalDocs = yes,
                 open_local_stdlib(Module, Res, !IO)
@@ -143,9 +157,16 @@ main(!IO) :-
                 ensure_cache(Backup, Module, !IO),
                 open_cache_stdlib(Module, Res, !IO)
             ),
+            ( if getopt_io.lookup_bool_option(Options, grep, yes) then
+                Target = substring(Atom)
+            else if getopt_io.lookup_bool_option(Options, comment, yes) then
+                Target = comment(Atom)
+            else
+                Target = token(Atom)
+            ),
             (
                 Res = ok(File),
-                grep_atom(Module, Atom, File, !IO)
+                grep_atom(Restrict, Module, Target, File, !IO)
             ;
                 Res = error(Reason),
                 die(string(Reason), !IO)
@@ -246,19 +267,25 @@ remote_stdlib(Module, !IO) :-
 backup_stdlib(Module, !IO) :-
     browse_to(config.backup_url(Module), !IO).
 
+:- type grep_target
+    --->    comment(string)
+    ;       substring(string)
+    ;       token(string).
+
 :- type grep_state
     --->    other_module
     ;       in_module(list(string))
+    ;       in_term(list(string))
     ;       ending_term.
 
-:- pred grep_atom(string, string, io.input_stream, io, io).
-:- mode grep_atom(in, in, in, di, uo) is det.
-grep_atom(Module, Atom, File, !IO) :-
-    grep_atom(other_module, Module, Atom, File, !IO).
-
-:- pred grep_atom(grep_state, string, string, io.input_stream, io, io).
+:- pred grep_atom(maybe(string), string, grep_target, io.input_stream, io, io).
 :- mode grep_atom(in, in, in, in, di, uo) is det.
-grep_atom(other_module, Module, Atom, File, !IO) :-
+grep_atom(Restrict, Module, Target, File, !IO) :-
+    grep_atom(other_module, Restrict, Module, Target, File, !IO).
+
+:- pred grep_atom(grep_state, maybe(string), string, grep_target, io.input_stream, io, io).
+:- mode grep_atom(in, in, in, in, in, di, uo) is det.
+grep_atom(other_module, Restrict, Module, Target, File, !IO) :-
     io.read_line_as_string(File, Res, !IO),
     (
         Res = ok(Line),
@@ -267,7 +294,7 @@ grep_atom(other_module, Module, Atom, File, !IO) :-
         else
             S = other_module
         ),
-        grep_atom(S, Module, Atom, File, !IO)
+        grep_atom(S, Restrict, Module, Target, File, !IO)
     ;
         Res = eof
     ;
@@ -275,24 +302,84 @@ grep_atom(other_module, Module, Atom, File, !IO) :-
         die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
     ).
 
-grep_atom(in_module(L), Module, Atom, File, !IO) :-
+grep_atom(InSomething, Restrict, Module, Target, File, !IO) :-
+    ( InSomething = in_module(L) ; InSomething = in_term(L) ),
     io.read_line_as_string(File, Res, !IO),
     (
         Res = ok(Line),
+        CodeLine = no_comments(Line),
         ( if Line = ":- module " ++ Module ++ ".\n" then
             S = in_module([])
         else if prefix(Line, ":- module ") then
             S = other_module
-        else if prefix(Line, ":-"), sub_string_search(Line, Atom, _) then
-            foldl(io.write_string, reverse(L), !IO),
-            io.write_string(Line, !IO),
-            S = ending_term
         else if prefix(Line, "    %") then
-            S = in_module([Line | L])
+            ( if Target = comment(Text), sub_string_search(Line, Text, _) then
+                dump(Line, L, !IO),
+                S = ending_term
+            else
+                S = in_module([Line | L])
+            )
+        else if
+            Target = substring(Text),
+            (
+                InSomething = in_module(_),
+                prefix(Line, ":-"),
+                (
+                    Restrict = yes(P),
+                    prefix(Line, ":- " ++ P)
+                ;
+                    Restrict = no
+                )
+            ;
+                InSomething = in_term(_)
+            ),
+            sub_string_search(CodeLine, Text, _)
+        then
+            dump(Line, L, !IO),
+            S = ending_term
+        else if
+            Target = token(Token),
+            (
+                InSomething = in_module(_),
+                prefix(Line, ":-"),
+                (
+                    Restrict = yes(P),
+                    prefix(Line, ":- " ++ P)
+                ;
+                    Restrict = no
+                ),
+                tokenize(Token, CodeLine,
+                    [_ | Tokens]) % skip leading 'pred', 'func', etc.
+            ;
+                InSomething = in_term(_),
+                tokenize(Token, CodeLine, Tokens)
+            ),
+            list.member(Token, Tokens)
+        then
+            dump(Line, L, !IO),
+            S = ending_term
+        else if
+            ( Target = substring(_) ; Target = token(_) ),
+            prefix(Line, ":-"),
+            (
+                Restrict = yes(P),
+                prefix(Line, ":- " ++ P)
+            ;
+                Restrict = no
+            ),
+            not suffix(string.rstrip(CodeLine), ".")
+        then
+            S = in_term([Line | L])
+        else if
+            InSomething = in_term(_),
+            ( prefix(Line, " ") ; prefix(Line, "%") ),
+            not all_match(is_whitespace, Line)
+        then
+            S = in_term([Line | L])
         else
             S = in_module([])
         ),
-        grep_atom(S, Module, Atom, File, !IO)
+        grep_atom(S, Restrict, Module, Target, File, !IO)
     ;
         Res = eof
     ;
@@ -300,22 +387,51 @@ grep_atom(in_module(L), Module, Atom, File, !IO) :-
         die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
     ).
 
-grep_atom(ending_term, Module, Atom, File, !IO) :-
+grep_atom(ending_term, Restrict, Module, Target, File, !IO) :-
     io.read_line_as_string(File, Res, !IO),
     (
         Res = ok(Line),
-        io.write_string(Line, !IO),
+        dump(Line, [], !IO),
         ( if all_match(is_whitespace, Line) then
             S = in_module([])
         else
             S = ending_term
         ),
-        grep_atom(S, Module, Atom, File, !IO)
+        grep_atom(S, Restrict, Module, Target, File, !IO)
     ;
         Res = eof
     ;
         Res = error(E),
         die(string.format("error reading cache file: %s", [s(string(E))]), !IO)
+    ).
+
+:- pred dump(string, list(string), io, io).
+:- mode dump(in, in, di, uo) is det.
+dump(Line, L, !IO) :-
+    foldl(io.write_string, map(html.decode_html_entities, reverse(L)), !IO),
+    io.write_string(html.decode_html_entities(Line), !IO).
+
+:- func no_comments(string) = string.
+no_comments(Line) = CodeLine :-
+    ( if [CodeLine0 | _] = split_at_char('%', Line) then
+        CodeLine = CodeLine0
+    else
+        CodeLine = Line
+    ).
+
+:- pred tokenize(string, string, list(string)).
+:- mode tokenize(in, in, out) is det.
+tokenize(Token, Line, Tokens) :-
+    ( if string.contains_char(Token, '.') then
+        P = (pred(C::in) is semidet :-
+            not C = ('.'),
+            not char.is_alnum_or_underscore(C)),
+        Tokens0 = words_separator(P, Line),
+        Tokens = list.map(string.remove_suffix_if_present("."), Tokens0)
+    else
+        P = (pred(C::in) is semidet :-
+            not char.is_alnum_or_underscore(C)),
+        Tokens = words_separator(P, Line)
     ).
 
 :- pred open_local_stdlib(string, io.res(io.input_stream), io, io).
