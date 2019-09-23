@@ -1,5 +1,5 @@
 BIN=mmc-doc
-DEPS=config.m libinfo.m mmcdoc.m popen.m
+DEPS=config.m libinfo.m mmcdoc.m popen.m html.m
 FILES=$(patsubst %.m,%,$(DEPS))
 GENEXT=d,o,mh,err,c,c_date,mh
 GRADE=hlc.gc
