@@ -9,7 +9,7 @@ $ mmc-doc -i ref     # open Mercury Language Reference Manual
 
 $ mmc-doc io print_line  # search io interface for 'print_line' as a token
 $ mmc-doc io -g print    # search for 'print' as a substring
-$ mmc-doc io -c print    # search for anythinf with 'print' in its comments
+$ mmc-doc io -c print    # search for anything with 'print' in its comments
 $ mmc-doc io error -t type  # search io 'type' declarations for 'error'
 ```
 
