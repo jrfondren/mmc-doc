@@ -92,7 +92,7 @@ index("faq", "faq").
 main(!IO) :-
     io.command_line_arguments(RawArgs, !IO),
     Config = option_ops_multi(short_option, long_option, option_defaults),
-    getopt_io.process_options(Config, RawArgs, Args, ResOpts, !IO),
+    getopt_io.process_options_io(Config, RawArgs, Args, ResOpts, !IO),
     (
         ResOpts = ok(Options),
         getopt_io.lookup_bool_option(Options, backup, Backup),
@@ -177,7 +177,8 @@ main(!IO) :-
     ;
         ResOpts = error(Reason),
         io.progname_base("mmc-doc", Program, !IO),
-        io.format(io.stderr_stream, "%s: %s\n", [s(Program), s(Reason)], !IO),
+        io.format(io.stderr_stream, "%s: %s\n",
+            [s(Program), s(option_error_to_string(Reason))], !IO),
         usage(!IO)
     ).
 
