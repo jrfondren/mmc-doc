@@ -62,7 +62,7 @@ stdlib("int64").
 stdlib("integer").
 stdlib("io").
 stdlib("lazy").
-stdlib("lexer").
+stdlib("mercury_term_lexer").
 stdlib("library").
 stdlib("list").
 stdlib("map").
@@ -71,7 +71,7 @@ stdlib("maybe").
 stdlib("multi_map").
 stdlib("ops").
 stdlib("pair").
-stdlib("parser").
+stdlib("mercury_term_parser").
 stdlib("parsing_utils").
 stdlib("pprint").
 stdlib("pqueue").
