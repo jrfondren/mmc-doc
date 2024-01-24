@@ -21,7 +21,8 @@ version = "v0.2.0".
     ;       backup
     ;       grep
     ;       comment
-    ;       restrict.
+    ;       restrict
+    ;       rotd.
 
 :- pred short_option(char::in, option::out) is semidet.
 short_option('h', help).
@@ -33,6 +34,7 @@ short_option('b', backup).
 short_option('g', grep).
 short_option('c', comment).
 short_option('t', restrict).
+short_option('r', rotd).
 
 :- pred long_option(string::in, option::out) is semidet.
 long_option("help", help).
@@ -44,6 +46,7 @@ long_option("refresh-cache", refresh_cache).
 long_option("backup", backup).
 long_option("grep", grep).
 long_option("comment", comment).
+long_option("rotd", rotd).
 
 :- pred option_defaults(option, option_data).
 :- mode option_defaults(out, out) is multi.
@@ -55,6 +58,7 @@ option_defaults(list_modules, bool(no)).
 option_defaults(refresh_cache, bool(no)).
 option_defaults(index, bool(no)).
 option_defaults(backup, bool(no)).
+option_defaults(rotd, bool(no)).
 option_defaults(grep, bool(no)).
 option_defaults(comment, bool(no)).
 option_defaults(restrict, maybe_string(no)).
@@ -68,7 +72,8 @@ usage(!IO) :-
         "  -v, --version      show version\n" ++
         "  -l, --local        use local documentation (implied by -i)\n" ++
         "  -n, --no-cache     load remote docs without caching\n" ++
-        "  -b, --backup       use backup (mercury-in.space) URL for remote docs\n\n" ++
+        "  -b, --backup       use backup (mercury-in.space) URL for remote docs\n" ++
+        "  -r, --rotd         use the latest ROTD URL for remote docs\n\n" ++
         "  <module> <token>   search module declarations for token\n" ++
         "  -g, --grep         search for substrings instead of tokens\n" ++
         "  -c, --comment      search for comment substrings\n" ++
@@ -92,10 +97,12 @@ index("faq", "faq").
 main(!IO) :-
     io.command_line_arguments(RawArgs, !IO),
     Config = option_ops_multi(short_option, long_option, option_defaults),
-    getopt_io.process_options(Config, RawArgs, Args, ResOpts, !IO),
+    getopt_io.process_options_io(Config, RawArgs, Args, ResOpts, !IO),
     (
         ResOpts = ok(Options),
+        getopt_io.lookup_bool_option(Options, rotd, ROTD),
         getopt_io.lookup_bool_option(Options, backup, Backup),
+
         ( if getopt_io.lookup_bool_option(Options, help, yes) then
             usage(!IO)
         else if getopt_io.lookup_bool_option(Options, version, yes) then
@@ -105,10 +112,18 @@ main(!IO) :-
             P = (pred(M::out) is nondet :- libinfo.stdlib(M)),
             solutions(P, Modules),
             foldl(io.print_line, Modules, !IO)
+
         else if getopt_io.lookup_bool_option(Options, refresh_cache, yes) then
             P = (pred(M::out) is nondet :- libinfo.stdlib(M)),
             solutions(P, Modules),
-            foldl(refresh_cache(Backup), Modules, !IO)
+
+            ( if ROTD = yes then
+                BackupSource = refresh_rotd
+            else
+                BackupSource = refresh_backup(Backup)
+            ),
+            foldl(refresh_cache(BackupSource), Modules, !IO)
+
         else if
             getopt_io.lookup_bool_option(Options, index, yes),
             Args = [Index],
@@ -177,7 +192,7 @@ main(!IO) :-
     ;
         ResOpts = error(Reason),
         io.progname_base("mmc-doc", Program, !IO),
-        io.format(io.stderr_stream, "%s: %s\n", [s(Program), s(Reason)], !IO),
+        io.format(io.stderr_stream, "%s: %s\n", [s(Program), s(option_error_to_string(Reason))], !IO),
         usage(!IO)
     ).
 
@@ -215,28 +230,36 @@ ensure_cache(Backup, Module, !IO) :-
             Res2 = ok
         ;
             Res2 = error(_),
-            refresh_cache(Backup, Module, !IO)
+            refresh_cache(refresh_backup(Backup), Module, !IO)
         )
     ;
         Res = no,
         die("Unable to determine local cachefile. Try --local\n", !IO)
     ).
 
-:- pred refresh_cache(bool::in, string::in, io::di, io::uo) is det.
-refresh_cache(Backup, Module, !IO) :-
+
+    % Indicate what version of backup we want from the website.
+    %
+:- type backup_source
+    --->    refresh_backup(bool)
+    ;       refresh_rotd.
+
+:- pred refresh_cache(backup_source::in, string::in, io::di, io::uo) is det.
+refresh_cache(BackupSource, Module, !IO) :-
     config.cachefile(Module, Res, !IO),
     (
         Res = yes(Path),
         config.older(Path, 14, Old, !IO),
         (
             Old = yes,
-            (
-                Backup = yes,
+            ( if BackupSource = refresh_rotd then
+                Url = config.rotd_url(Module)
+            else if BackupSource = refresh_backup(yes) then
                 Url = config.backup_url(Module)
-            ;
-                Backup = no,
+            else
                 Url = config.url(Module)
             ),
+
             Cmd = string.format("wget -O '%s' '%s'", [s(Path), s(Url)]),
             call_system(Cmd, !IO),
             call_system("touch " ++ Path, !IO)
