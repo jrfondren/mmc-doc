@@ -177,7 +177,8 @@ main(!IO) :-
     ;
         ResOpts = error(Reason),
         io.progname_base("mmc-doc", Program, !IO),
-        io.format(io.stderr_stream, "%s: %s\n", [s(Program), s(option_error_to_string(Reason))], !IO),
+        io.format(io.stderr_stream, "%s: %s\n",
+            [s(Program), s(option_error_to_string(Reason))], !IO),
         usage(!IO)
     ).
 
