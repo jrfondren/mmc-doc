@@ -24,6 +24,8 @@
 
 :- func backup_url(string) = string.
 
+:- func rotd_url(string) = string.
+
 :- pred exists(string::in, bool::out, io::di, io::uo) is det.
 
     % older(Path, Days, Bool, !IO)
@@ -74,6 +76,10 @@ url(Module) = Base ++ libinfo.anchor(Module) ++ ".html" :-
 
 backup_url(Module) = Base ++ libinfo.anchor(Module) ++ ".html" :-
     Base = "https://mercury-in.space/mercurylang.org/information/doc-latest/mercury_library/".
+
+rotd_url(Module) = Base ++ libinfo.anchor(Module) ++ ".html" :-
+    Base = "https://mercurylang.org/information/doc-release/mercury_library/".
+
 
 configdir(Dir, !IO) :-
     get_configdir(Decided, !IO),
